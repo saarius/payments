@@ -12,7 +12,7 @@ Install the supplied systemd unit, reload systemd, and enable `backroadbum-payme
 
 ## Explicitly unfinished
 
-The paired merchant-only Commerce profile can fetch `/api/commerce-settings` using its separate `commerce:settings` audience and exchange Payments passes on this merchant's exact host. Cross-audience or cross-scope passes are refused; the settings response contains no credential. The generic Commerce build still uses its fixed DinkusKit.com trust boundary. Keep shopper checkout closed until Commerce-backed Stripe Test checkout, a paid order, receipt/recovery, and browser checks pass.
+The paired merchant-only Commerce profile can fetch `/api/commerce-settings` using its separate `commerce:settings` audience and exchange Payments passes on this merchant's exact host. Cross-audience or cross-scope passes are refused; the settings response contains no credential. An operator completed a Commerce-backed Stripe TEST purchase and confirmed the canonical paid order in Commerce; the normal shopper return and receipt UI are still a separate gate. The generic Commerce build still uses its fixed DinkusKit.com trust boundary. Keep shopper checkout closed until Commerce-backed Stripe Test checkout, a paid order, receipt/recovery, and browser checks pass.
 
 Webhooks, durable wake delivery, Commerce reconciliation, and Ship integration are not wired here. In particular, v0.5.0's webhook matcher expects a connected-account `event.account`, while direct own-account events need separately verified account provenance; do not synthesize that field or treat an event as payment proof. Provider lookup remains the authority. There are no Sales, catalog, cart, order or receipt tables in this runtime.
 

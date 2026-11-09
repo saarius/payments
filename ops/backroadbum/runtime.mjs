@@ -124,7 +124,7 @@ export async function createMerchantRuntime({ config, apiKey, store, provider, a
     async fetch(request) {
       const url = new URL(request.url);
       if (url.pathname === '/health' && request.method === 'GET' && !url.search) {
-        return json({ service: 'backroadbum-payments', mode: 'test', paidOrderVerified: false, webhookConnected: false });
+        return json({ service: 'backroadbum-payments', mode: 'test', webhookConnected: false });
       }
       if (url.pathname === '/api/store-passes') {
         if (request.method !== 'POST' || url.search) return json({ error: 'method_not_allowed' }, 405);
