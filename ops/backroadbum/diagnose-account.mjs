@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs';
 import Stripe from 'stripe';
 import { createStripeClient, accountReadiness, ACCOUNTS_STRIPE_API_VERSION } from '../../src/stripe/onboarding.ts';
+async function main() {
 const config = JSON.parse(readFileSync('/etc/backroadbum/payments.json', 'utf8'));
 const key = process.env.STRIPE_API_KEY;
 if (!key?.startsWith('sk_test_')) throw Error('test_key_required');
@@ -18,3 +19,8 @@ try {
   delete report.v2.id;
 } catch { report.v2 = { state: 'unavailable' }; }
 console.log(JSON.stringify(report, null, 2));
+}
+main().catch(() => {
+  console.error('Account diagnostic refused; no provider exception or credentials emitted.');
+  process.exitCode = 1;
+});

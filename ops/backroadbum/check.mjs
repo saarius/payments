@@ -1,6 +1,7 @@
 // Read-only operator check. Never creates a Checkout Session or emits credentials.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+async function main() {
 const config = JSON.parse(readFileSync('/etc/backroadbum/payments.json', 'utf8'));
 const base = 'http://127.0.0.1:8787';
 const unauthorized = await fetch(base + '/v1/status');
@@ -19,3 +20,8 @@ assert.equal(status.connectionEvidence?.accountRef, config.stripeAccountId);
 console.log(JSON.stringify({ checkedAt: new Date().toISOString(), unauthenticatedHttp: unauthorized.status,
   authenticatedHttp: response.status, mode: status.mode, providerReadiness: status.state,
   configuredAccountMatches: true, storefrontConnected: false, paidOrderVerified: false }, null, 2));
+}
+main().catch(() => {
+  console.error('Private Payments check failed; no response body or credentials emitted.');
+  process.exitCode = 1;
+});

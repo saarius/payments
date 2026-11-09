@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
@@ -137,6 +138,26 @@ test('failed synchronous transactions roll back and async transactions are refus
   assert.throws(() => store.transaction(tx => { tx.write({ attemptId: 'x' }); throw Error('stop'); }), /stop/);
   assert.equal(store.transaction(tx => tx.read('x')), null);
   assert.throws(() => store.transaction(async () => 1), /synchronous_transaction_required/);
+});
+test('operator checks suppress malformed private configuration without exposing its contents', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'brb-private-config-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const hook = join(dir, 'mock-config.mjs');
+  writeFileSync(hook, `import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const original = fs.readFileSync;
+    fs.readFileSync = (path, ...args) => String(path) === '/etc/backroadbum/payments.json'
+      ? '{"secret":"sk_test_fixture_must_not_leak",BROKEN' : original(path, ...args);
+    syncBuiltinESMExports();`);
+  for (const name of ['check', 'diagnose-account']) {
+    const result = spawnSync(process.execPath, ['--import', 'tsx', '--import', hook, `ops/backroadbum/${name}.mjs`], {
+      cwd: process.cwd(), env: { PATH: process.env.PATH, NODE_ENV: 'test' }, encoding: 'utf8', timeout: 10000,
+    });
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /no (?:provider exception|response body) or credentials emitted/);
+    assert.doesNotMatch(result.stderr, /sk_test_fixture_must_not_leak|BROKEN/);
+  }
 });
 test('loopback HTTP bridge limits bodies and does not trust Host', async t => {
   const observed = [];
