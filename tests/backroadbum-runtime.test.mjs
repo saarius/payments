@@ -79,6 +79,27 @@ test('pass exchange requires the private key, exact site/audience/scope and shap
   }
   assert.equal((await f.pass()).status, 200);
 });
+test('merchant checkout settings require their own scoped audience and expose no credentials', async t => {
+  const f = await fixture(t);
+  const path = '/api/commerce-settings';
+  assert.equal((await f.raw(new Request(f.config.origin + path))).status, 401);
+  assert.equal((await f.request(path)).status, 401);
+  const token = (await (await f.pass('commerce:settings', { audience: 'backroadbum-commerce' })).json()).access_token;
+  const response = await f.request(path, null, token);
+  assert.equal(response.status, 200);
+  const settings = await response.json();
+  assert.equal(settings.mode, 'test');
+  assert.equal(settings.shipping.mode, 'free');
+  assert.equal(settings.siteId, f.config.siteId);
+  assert.equal(settings.stripeAccountId, f.config.stripeAccountId);
+  assert.equal(settings.pricingSchema, 'dinkuskit.commerce.checkout-pricing/v1');
+  assert.doesNotMatch(JSON.stringify(settings), /dk_store_|privateKey|sk_test_|PRIVATE KEY/);
+  assert.equal((await f.request('/v1/status', null, token)).status, 401);
+  assert.equal((await f.request(path, null, token, { 'x-dinkus-site': 'other' })).status, 401);
+  for (const [scope, audience] of [['commerce:settings', f.config.audience], ['payments:checkout', 'backroadbum-commerce']]) {
+    assert.equal((await f.pass(scope, { audience })).status, 400);
+  }
+});
 test('service rejects missing, expired, wrong-scope and wrong-site passes', async t => {
   const f = await fixture(t);
   assert.equal((await f.raw(new Request(f.config.origin + '/v1/status'))).status, 401);

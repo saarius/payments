@@ -12,7 +12,7 @@ Install the supplied systemd unit, reload systemd, and enable `backroadbum-payme
 
 ## Explicitly unfinished
 
-The storefront is **not connected**. Its pinned Commerce Registry bundle exchanges store keys only at a fixed DinkusKit.com address and does not admit this merchant's service host. Any future wiring must deliberately bind the merchant-owned issuer and transport without impersonating DinkusKit.com or relaxing sandbox allowlists. Keep shopper checkout closed until Commerce-backed Stripe Test checkout, a paid order, receipt/recovery, and browser checks pass.
+The paired merchant-only Commerce profile can fetch `/api/commerce-settings` using its separate `commerce:settings` audience and exchange Payments passes on this merchant's exact host. Cross-audience or cross-scope passes are refused; the settings response contains no credential. The generic Commerce build still uses its fixed DinkusKit.com trust boundary. Keep shopper checkout closed until Commerce-backed Stripe Test checkout, a paid order, receipt/recovery, and browser checks pass.
 
 Webhooks, durable wake delivery, Commerce reconciliation, and Ship integration are not wired here. In particular, v0.5.0's webhook matcher expects a connected-account `event.account`, while direct own-account events need separately verified account provenance; do not synthesize that field or treat an event as payment proof. Provider lookup remains the authority. There are no Sales, catalog, cart, order or receipt tables in this runtime.
 

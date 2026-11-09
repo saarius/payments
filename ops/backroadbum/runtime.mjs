@@ -63,6 +63,15 @@ export function openAttemptStore(path, config) {
   };
 }
 
+/** Merchant-owned configuration; no secret or browser-supplied money enters it. */
+export function merchantCheckoutSettings(config) {
+  return { schema: 'dinkuskit.commerce.registry-checkout/v1', enabled: true, commerceOrigin: config.origin,
+    siteId: config.siteId, paymentsOrigin: config.origin, bindingRef: config.bindingRef,
+    providerId: 'stripe', stripeAccountId: config.stripeAccountId, mode: 'test',
+    pricingSchema: 'dinkuskit.commerce.checkout-pricing/v1', issuer: config.issuer, audience: config.audience,
+    shipping: { configurationId: 'brb_free_test_v1', revision: 1, mode: 'free' } };
+}
+
 /** Transport composition only: all amount/window/session matching stays in Payments. */
 export async function createMerchantRuntime({ config, apiKey, store, provider, accountStatus }) {
   validateConfig(config, apiKey);
@@ -70,6 +79,10 @@ export async function createMerchantRuntime({ config, apiKey, store, provider, a
   const publicKey = await importSPKI(config.publicKey, 'ES256');
   const authenticatePass = createAccountAuthenticator({
     issuer: config.issuer, audience: config.audience, jwksUrl: `${config.issuer}/.well-known/jwks.json`,
+  }, async () => publicKey);
+  const settingsAudience = 'backroadbum-commerce';
+  const authenticateSettings = createAccountAuthenticator({
+    issuer: config.issuer, audience: settingsAudience, jwksUrl: `${config.issuer}/.well-known/jwks.json`,
   }, async () => publicKey);
   const owner = { accountId: JSON.stringify([config.issuer, config.subject]), siteId: config.siteId, siteOrigin: config.origin };
   const owned = principal => principal.accountId === owner.accountId && principal.siteId === owner.siteId && principal.siteOrigin === owner.siteOrigin;
@@ -111,7 +124,7 @@ export async function createMerchantRuntime({ config, apiKey, store, provider, a
     async fetch(request) {
       const url = new URL(request.url);
       if (url.pathname === '/health' && request.method === 'GET' && !url.search) {
-        return json({ service: 'backroadbum-payments', mode: 'test', storefrontConnected: false, webhookConnected: false });
+        return json({ service: 'backroadbum-payments', mode: 'test', paidOrderVerified: false, webhookConnected: false });
       }
       if (url.pathname === '/api/store-passes') {
         if (request.method !== 'POST' || url.search) return json({ error: 'method_not_allowed' }, 405);
@@ -120,12 +133,20 @@ export async function createMerchantRuntime({ config, apiKey, store, provider, a
         try {
           const body = await request.json();
           if (Object.keys(body).sort().join() !== 'audience,scope,site_id' || body.site_id !== config.siteId ||
-              body.audience !== config.audience || !['payments:checkout', 'payments:admin'].includes(body.scope)) return json({ error: 'invalid_pass_request' }, 400);
+              !(body.audience === config.audience && ['payments:checkout', 'payments:admin'].includes(body.scope) ||
+                body.audience === settingsAudience && body.scope === 'commerce:settings')) return json({ error: 'invalid_pass_request' }, 400);
           const token = await new SignJWT({ site_id: config.siteId, site_origin: config.origin, scope: body.scope })
-            .setProtectedHeader({ alg: 'ES256', kid: 'brb-owner-v1' }).setIssuer(config.issuer).setAudience(config.audience)
+            .setProtectedHeader({ alg: 'ES256', kid: 'brb-owner-v1' }).setIssuer(config.issuer).setAudience(body.audience)
             .setSubject(config.subject).setIssuedAt().setExpirationTime('5m').sign(privateKey);
           return json({ access_token: token, token_type: 'Bearer', expires_in: 300 });
         } catch { return json({ error: 'invalid_pass_request' }, 400); }
+      }
+      if (url.pathname === '/api/commerce-settings') {
+        if (request.method !== 'GET' || url.search) return json({ error: 'unexpected_input' }, 400);
+        try {
+          const principal = await authenticateSettings(request, 'commerce:settings');
+          return owned(principal) ? json(merchantCheckoutSettings(config)) : json({ error: 'unauthorized' }, 401);
+        } catch { return json({ error: 'unauthorized' }, 401); }
       }
       const response = await hosted(request);
       // Provider exceptions can include secret key fragments. Never forward 5xx messages.
