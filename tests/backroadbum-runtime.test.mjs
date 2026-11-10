@@ -186,7 +186,7 @@ test('operator checks suppress malformed private configuration without exposing 
     fs.readFileSync = (path, ...args) => String(path) === '/etc/backroadbum/payments.json'
       ? '{"secret":"sk_test_fixture_must_not_leak",BROKEN' : original(path, ...args);
     syncBuiltinESMExports();`);
-  for (const [name, args] of [['check', []], ['diagnose-account', []], ['replay-webhook', ['--check']], ['check-ship-grant', []]]) {
+  for (const [name, args] of [['check', []], ['diagnose-account', []], ['replay-webhook', ['--check']], ['check-ship-grant', []], ['check-commerce-ship', []]]) {
     const result = spawnSync(process.execPath, ['--import', 'tsx', '--import', hook, `ops/backroadbum/${name}.mjs`, ...args], {
       cwd: process.cwd(), env: { PATH: process.env.PATH, NODE_ENV: 'test' }, encoding: 'utf8', timeout: 10000,
     });

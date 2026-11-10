@@ -42,9 +42,10 @@ try {
     const payments = await exchange(config.storeKey, 'payments:admin', config.audience); check(payments.status === 200, 'payments_regression');
     const paymentToken = (await payments.json()).access_token;
     check((await fetch(ORIGIN + '/api/ship/v1/admin/status', { redirect: 'error', headers: { authorization: 'Bearer ' + paymentToken } })).status === 401, 'payment_pass_admitted');
-    for (const path of ['/api/ship/v1/orders', '/api/ship/v1/admin/settings', '/api/ship/v1/admin/orders/fixture/labels', '/api/ship/print/fixture']) {
+    for (const path of ['/api/ship/v1/orders', '/api/ship/v1/admin/settings', '/api/ship/v1/admin/orders/fixture/labels']) {
       check((await get(path)).status === 404, 'unexpected_proxy_route');
     }
+    check((await get('/api/ship/print/fixture')).status === 410, 'invalid_pdf_capability_not_denied');
     check((await fetch(ORIGIN + '/api/ship/v1/admin/status', { method: 'POST', redirect: 'error', headers: { authorization: 'Bearer ' + body.access_token } })).status === 404, 'write_route_proxied');
     for (const path of ['/api/ship/v1/admin/status', '/api/ship/v1/admin/orders']) check((await fetch(ORIGIN + path, { redirect: 'error' })).status === 401, 'anonymous_access');
     console.log(JSON.stringify({ schema: 'backroadbum.ship-connection-check/v1', grant: 'enabled', signature: 'ES256 verified',

@@ -15,6 +15,7 @@ import { createStripeWebhookVerifier } from '../../src/checkout/webhook.ts';
 import { createWakeStorage } from './wakes.mjs';
 import { createOwnAccountWebhook } from './webhook.mjs';
 import { readShipGrant, validateShipGrant, SHIP_AUDIENCE, SHIP_SCOPE } from './ship-grant.mjs';
+import { readCommerceShip, validateCommerceShip } from './commerce-ship.mjs';
 
 const json = (body, status = 200) => Response.json(body, {
   status, headers: { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' },
@@ -53,6 +54,7 @@ export function openAttemptStore(path, config) {
   return {
     ...createWakeStorage(db, config),
     close: () => db.close(),
+    readCommerceShip: () => readCommerceShip(config, db),
     transaction(fn) {
       db.exec('BEGIN IMMEDIATE');
       try {
@@ -78,7 +80,7 @@ export function merchantCheckoutSettings(config) {
 }
 
 /** Transport composition only: all amount/window/session matching stays in Payments. */
-export async function createMerchantRuntime({ config, apiKey, store, provider, accountStatus, webhookSecret, retrieveEvent, shipGrant = () => null }) {
+export async function createMerchantRuntime({ config, apiKey, store, provider, accountStatus, webhookSecret, retrieveEvent, shipGrant = () => null, commerceShip = () => null }) {
   validateConfig(config, apiKey);
   const privateKey = await importPKCS8(config.privateKey, 'ES256');
   const publicKey = await importSPKI(config.publicKey, 'ES256', { extractable: true });
@@ -86,6 +88,10 @@ export async function createMerchantRuntime({ config, apiKey, store, provider, a
   const authenticatePass = createAccountAuthenticator({
     issuer: config.issuer, audience: config.audience, jwksUrl: `${config.issuer}/.well-known/jwks.json`,
   }, async () => publicKey);
+  async function currentShip() {
+    try { const value = await commerceShip(); return validateCommerceShip(value, config, value?.generation); }
+    catch { return null; }
+  }
   const settingsAudience = 'backroadbum-commerce';
   const authenticateSettings = createAccountAuthenticator({
     issuer: config.issuer, audience: settingsAudience, jwksUrl: `${config.issuer}/.well-known/jwks.json`,
@@ -174,15 +180,25 @@ export async function createMerchantRuntime({ config, apiKey, store, provider, a
         if (!commerce && !ship) return json({ error: 'unauthorized' }, 401);
         try {
           const body = await request.json();
+          const orders = commerce && body?.audience === SHIP_AUDIENCE && body?.scope === 'ship:orders' && (await currentShip())?.enabled === true;
           if (!body || Object.keys(body).sort().join() !== 'audience,scope,site_id' || body.site_id !== config.siteId ||
               !(commerce && (body.audience === config.audience && ['payments:checkout', 'payments:admin'].includes(body.scope) ||
-                body.audience === settingsAudience && body.scope === 'commerce:settings') ||
+                body.audience === settingsAudience && body.scope === 'commerce:settings' || orders) ||
                 ship && body.audience === SHIP_AUDIENCE && body.scope === SHIP_SCOPE)) return json({ error: 'invalid_pass_request' }, 400);
           const token = await new SignJWT({ site_id: config.siteId, site_origin: config.origin, scope: body.scope })
             .setProtectedHeader({ alg: 'ES256', kid: 'brb-owner-v1' }).setIssuer(config.issuer).setAudience(body.audience)
             .setSubject(config.subject).setIssuedAt().setExpirationTime('5m').sign(privateKey);
           return json({ access_token: token, token_type: 'Bearer', expires_in: 300 });
         } catch { return json({ error: 'invalid_pass_request' }, 400); }
+      }
+      if (url.pathname === '/api/commerce-ship') {
+        if (request.method !== 'GET' || url.search) return json({ error: 'unexpected_input' }, 400);
+        try {
+          const principal = await authenticateSettings(request, 'commerce:settings');
+          if (!owned(principal)) return json({ error: 'unauthorized' }, 401);
+          const value = await currentShip();
+          return value ? json(value) : json({ error: 'ship_admission_unavailable' }, 503);
+        } catch { return json({ error: 'unauthorized' }, 401); }
       }
       if (url.pathname === '/api/commerce-settings') {
         if (request.method !== 'GET' || url.search) return json({ error: 'unexpected_input' }, 400);
@@ -236,7 +252,7 @@ async function main() {
   const provider = createStripeCheckout({ apiKey: process.env.STRIPE_API_KEY, mode: 'test', ownAccountId: config.stripeAccountId });
   const runtime = await createMerchantRuntime({ config, apiKey: process.env.STRIPE_API_KEY, store, provider, accountStatus,
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET, retrieveEvent: id => stripe.events.retrieve(id),
-    shipGrant: () => readShipGrant(config) });
+    shipGrant: () => readShipGrant(config), commerceShip: () => store.readCommerceShip() });
   const server = createLoopbackServer(runtime, config.origin);
   server.listen(8787, '127.0.0.1', () => console.log('Merchant Payments listening on loopback; test mode only.'));
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => server.close(() => { store.close(); process.exit(0); }));
