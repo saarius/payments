@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { createStripeClient } from '../../src/stripe/onboarding.ts';
-import { importPKCS8, importSPKI, SignJWT } from 'jose';
+import { importPKCS8, importSPKI, exportJWK, SignJWT } from 'jose';
 import { createCheckoutSessionService } from '../../src/checkout/sessions.ts';
 import { createStripeCheckout } from '../../src/stripe/checkout.ts';
 import { createAccountAuthenticator } from '../../src/hosted/auth.ts';
@@ -81,7 +81,8 @@ export function merchantCheckoutSettings(config) {
 export async function createMerchantRuntime({ config, apiKey, store, provider, accountStatus, webhookSecret, retrieveEvent, shipGrant = () => null }) {
   validateConfig(config, apiKey);
   const privateKey = await importPKCS8(config.privateKey, 'ES256');
-  const publicKey = await importSPKI(config.publicKey, 'ES256');
+  const publicKey = await importSPKI(config.publicKey, 'ES256', { extractable: true });
+  const jwks = { keys: [{ ...await exportJWK(publicKey), kid: 'brb-owner-v1', alg: 'ES256', use: 'sig' }] };
   const authenticatePass = createAccountAuthenticator({
     issuer: config.issuer, audience: config.audience, jwksUrl: `${config.issuer}/.well-known/jwks.json`,
   }, async () => publicKey);
@@ -153,6 +154,10 @@ export async function createMerchantRuntime({ config, apiKey, store, provider, a
         return json({ service: 'backroadbum-payments', mode: 'test', webhookConfigured: Boolean(webhook),
           webhookConnected: Boolean(stats?.received), pendingWakes: stats?.pending ?? null,
           acknowledgedWakes: stats?.acknowledged ?? null, lastWebhookAt: stats?.lastReceivedAt ?? null });
+      }
+      if (url.pathname === '/.well-known/jwks.json') {
+        if (request.method !== 'GET' || url.search) return json({ error: 'unexpected_input' }, 405);
+        return json(jwks);
       }
       if (url.pathname === '/api/store-passes') {
         if (request.method !== 'POST' || url.search) return json({ error: 'method_not_allowed' }, 405);

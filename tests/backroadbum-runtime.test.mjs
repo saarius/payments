@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
-import { generateKeyPair, exportPKCS8, exportSPKI, SignJWT } from 'jose';
+import { generateKeyPair, exportPKCS8, exportSPKI, importJWK, jwtVerify, SignJWT } from 'jose';
 import { createMerchantRuntime, openAttemptStore, validateConfig, createLoopbackServer } from '../ops/backroadbum/runtime.mjs';
 
 async function fixture(t) {
@@ -78,6 +78,22 @@ test('pass exchange requires the private key, exact site/audience/scope and shap
     assert.equal((await f.pass('payments:checkout', body)).status, 400);
   }
   assert.equal((await f.pass()).status, 200);
+});
+test('merchant JWKS exposes only the existing public ES256 verification key', async t => {
+  const f = await fixture(t);
+  const response = await f.raw(new Request(f.config.origin + '/.well-known/jwks.json'));
+  assert.equal(response.status, 200);
+  const jwks = await response.json(); assert.equal(jwks.keys.length, 1);
+  const key = jwks.keys[0];
+  assert.deepEqual(Object.keys(key).sort(), ['alg', 'crv', 'kid', 'kty', 'use', 'x', 'y']);
+  assert.equal(key.alg, 'ES256'); assert.equal(key.kid, 'brb-owner-v1'); assert.equal(key.use, 'sig');
+  const token = (await (await f.pass()).json()).access_token;
+  const { payload } = await jwtVerify(token, await importJWK(key, 'ES256'), { issuer: f.config.issuer, audience: f.config.audience, algorithms: ['ES256'] });
+  assert.equal(payload.scope, 'payments:checkout');
+  assert.doesNotMatch(JSON.stringify(jwks), /dk_store_|PRIVATE KEY|privateKey/);
+  for (const request of [new Request(f.config.origin + '/.well-known/jwks.json', { method: 'POST' }), new Request(f.config.origin + '/.well-known/jwks.json?key=other')]) {
+    assert.equal((await f.raw(request)).status, 405);
+  }
 });
 test('merchant checkout settings require their own scoped audience and expose no credentials', async t => {
   const f = await fixture(t);
@@ -170,7 +186,7 @@ test('operator checks suppress malformed private configuration without exposing 
     fs.readFileSync = (path, ...args) => String(path) === '/etc/backroadbum/payments.json'
       ? '{"secret":"sk_test_fixture_must_not_leak",BROKEN' : original(path, ...args);
     syncBuiltinESMExports();`);
-  for (const [name, args] of [['check', []], ['diagnose-account', []], ['replay-webhook', ['--check']]]) {
+  for (const [name, args] of [['check', []], ['diagnose-account', []], ['replay-webhook', ['--check']], ['check-ship-grant', []]]) {
     const result = spawnSync(process.execPath, ['--import', 'tsx', '--import', hook, `ops/backroadbum/${name}.mjs`, ...args], {
       cwd: process.cwd(), env: { PATH: process.env.PATH, NODE_ENV: 'test' }, encoding: 'utf8', timeout: 10000,
     });
