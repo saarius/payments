@@ -11,6 +11,9 @@ import { createCheckoutSessionService } from '../../src/checkout/sessions.ts';
 import { createStripeCheckout } from '../../src/stripe/checkout.ts';
 import { createAccountAuthenticator } from '../../src/hosted/auth.ts';
 import { createHostedHandler } from '../../src/hosted/http.ts';
+import { createStripeWebhookVerifier } from '../../src/checkout/webhook.ts';
+import { createWakeStorage } from './wakes.mjs';
+import { createOwnAccountWebhook } from './webhook.mjs';
 
 const json = (body, status = 200) => Response.json(body, {
   status, headers: { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' },
@@ -47,6 +50,7 @@ export function openAttemptStore(path, config) {
   const read = db.prepare('SELECT value FROM attempts WHERE id=?');
   const write = db.prepare('INSERT INTO attempts VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET value=excluded.value');
   return {
+    ...createWakeStorage(db, config),
     close: () => db.close(),
     transaction(fn) {
       db.exec('BEGIN IMMEDIATE');
@@ -73,7 +77,7 @@ export function merchantCheckoutSettings(config) {
 }
 
 /** Transport composition only: all amount/window/session matching stays in Payments. */
-export async function createMerchantRuntime({ config, apiKey, store, provider, accountStatus }) {
+export async function createMerchantRuntime({ config, apiKey, store, provider, accountStatus, webhookSecret, retrieveEvent }) {
   validateConfig(config, apiKey);
   const privateKey = await importPKCS8(config.privateKey, 'ES256');
   const publicKey = await importSPKI(config.publicKey, 'ES256');
@@ -110,7 +114,27 @@ export async function createMerchantRuntime({ config, apiKey, store, provider, a
     async connect() { throw Error('operator_setup_required'); },
     checkoutBinding: readyBinding, existingBinding,
   };
+  let webhook;
+  if (webhookSecret) {
+    if (typeof retrieveEvent !== 'function') throw Error('event_retriever_required');
+    const verifier = createStripeWebhookVerifier({ apiKey, webhookSecret });
+    webhook = createOwnAccountWebhook({ config, sessions, store,
+      async verify(payload, signature) {
+        try { return await verifier.verify(payload, signature); }
+        catch (error) {
+          if (error?.type === 'StripeSignatureVerificationError' || error instanceof SyntaxError) throw Error('invalid_signature');
+          throw Error('verification_unavailable');
+        }
+      }, retrieveEvent,
+      async verifyOwnAccount() {
+        const account = await accountStatus();
+        if (account.object !== 'account' || account.id !== config.stripeAccountId) throw Error('stripe_account_mismatch');
+      },
+    });
+  }
   const hosted = createHostedHandler({
+    webhook,
+    wakes: () => ({ list: (ref, limit) => store.listWakes(ref, limit), acknowledge: wake => store.acknowledgeWake(wake) }),
     async authenticate(request, scope) {
       const principal = await authenticatePass(request, scope);
       if (!owned(principal)) throw Error('unauthorized');
@@ -124,7 +148,10 @@ export async function createMerchantRuntime({ config, apiKey, store, provider, a
     async fetch(request) {
       const url = new URL(request.url);
       if (url.pathname === '/health' && request.method === 'GET' && !url.search) {
-        return json({ service: 'backroadbum-payments', mode: 'test', webhookConnected: false });
+        const stats = webhook ? store.wakeStats() : null;
+        return json({ service: 'backroadbum-payments', mode: 'test', webhookConfigured: Boolean(webhook),
+          webhookConnected: Boolean(stats?.received), pendingWakes: stats?.pending ?? null,
+          acknowledgedWakes: stats?.acknowledged ?? null, lastWebhookAt: stats?.lastReceivedAt ?? null });
       }
       if (url.pathname === '/api/store-passes') {
         if (request.method !== 'POST' || url.search) return json({ error: 'method_not_allowed' }, 405);
@@ -148,6 +175,7 @@ export async function createMerchantRuntime({ config, apiKey, store, provider, a
           return owned(principal) ? json(merchantCheckoutSettings(config)) : json({ error: 'unauthorized' }, 401);
         } catch { return json({ error: 'unauthorized' }, 401); }
       }
+      if (url.pathname === '/v1/webhooks/stripe' && url.search) return json({ error: 'unexpected_input' }, 400);
       const response = await hosted(request);
       // Provider exceptions can include secret key fragments. Never forward 5xx messages.
       return response.status >= 500 ? json({ error: 'payments_unavailable' }, response.status) : response;
@@ -190,7 +218,8 @@ async function main() {
   if ((await accountStatus()).id !== config.stripeAccountId) throw Error('stripe_account_mismatch');
   const store = openAttemptStore('/var/lib/backroadbum/payments/attempts.db', config);
   const provider = createStripeCheckout({ apiKey: process.env.STRIPE_API_KEY, mode: 'test', ownAccountId: config.stripeAccountId });
-  const runtime = await createMerchantRuntime({ config, apiKey: process.env.STRIPE_API_KEY, store, provider, accountStatus });
+  const runtime = await createMerchantRuntime({ config, apiKey: process.env.STRIPE_API_KEY, store, provider, accountStatus,
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET, retrieveEvent: id => stripe.events.retrieve(id) });
   const server = createLoopbackServer(runtime, config.origin);
   server.listen(8787, '127.0.0.1', () => console.log('Merchant Payments listening on loopback; test mode only.'));
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => server.close(() => { store.close(); process.exit(0); }));
