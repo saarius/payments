@@ -20,6 +20,14 @@ The existing own-account TEST endpoint `/v1/webhooks/stripe` verifies the origin
 
 `node --import tsx --test tests/backroadbum-runtime.test.mjs tests/backroadbum-webhooks.test.mjs` verifies the composition. With the private test environment loaded without echoing it, `node --import tsx ops/backroadbum/replay-webhook.mjs --check` inspects the retained shopper proof; `--resend` explicitly asks Stripe to redeliver its real event (same API operation as Stripe CLI). Optional `--state-file=/etc/backroadbum/webhook-shopper-browser.json` selects the later background-order proof. These commands create no session/payment/order and never sign a fabricated delivery themselves.
 
-There are no Sales, catalog, cart, order or receipt tables in this runtime. Public shopper checkout remains independently closed while sandbox Ship is unfinished; account/email recovery and off-host recovery also remain unverified.
+There are no Sales, catalog, cart, order or receipt tables in this runtime. Public TEST checkout is open behind independent admission controls; Ship fulfillment, account/email recovery and off-host recovery remain unfinished.
+
+## Separate merchant Ship admin grant
+
+This host also serves the merchant issuer; `ship-grant.mjs` is a merchant extension, not a Payments product API. `sudo node ops/backroadbum/configure-ship-grant.mjs` creates `/etc/backroadbum/ship-grant.json`0600 with a separate random plugin key and `enabled:false`, preserving any existing grant. Give `agent` read access without widening the mode. Provision only Ship's encrypted `connection` setting through the store's authenticated API, then deliberately enable this grant. No signing key, Payments binding, Stripe environment or Commerce setting changes.
+
+The issuer reads the file on each exchange, refusing missing, malformed, linked, oversized, permissive or disabled files for Ship while existing Payments/Commerce exchanges continue. The Ship key grants only the fixed `ship:admin` scope and `backroadbum-ship` audience for the exact merchant site/origin; it cannot mint machine `ship:orders`, Payments or Commerce settings passes. Conversely the Commerce key cannot mint Ship passes. No Ship state lives in the Payments database. Focused proof: `node --import tsx --test tests/backroadbum-ship-grant.test.mjs tests/backroadbum-runtime.test.mjs`.
+
+Disabling or rotating the private grant affects the next exchange. The read-only Ship page trades on every refresh, without KV caching. Already-issued passes remain valid for at most five minutes; remove the two exact read-only Ship proxy routes for immediate cutoff. The grant is not in the narrow SQLite/Ship-print backup; retain its recovery separately before widening integration. It does not admit orders or authorize postage.
 
 The normal site backup includes a consistent copy of `payments/attempts.db`. Each database is copied consistently, not as one cross-service transaction; a restore must reconcile outstanding attempts with the provider. Secrets require separate operator recovery and must never enter a public artifact. Local snapshots alone are not off-host recovery.

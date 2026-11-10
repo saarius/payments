@@ -14,6 +14,7 @@ import { createHostedHandler } from '../../src/hosted/http.ts';
 import { createStripeWebhookVerifier } from '../../src/checkout/webhook.ts';
 import { createWakeStorage } from './wakes.mjs';
 import { createOwnAccountWebhook } from './webhook.mjs';
+import { readShipGrant, validateShipGrant, SHIP_AUDIENCE, SHIP_SCOPE } from './ship-grant.mjs';
 
 const json = (body, status = 200) => Response.json(body, {
   status, headers: { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' },
@@ -77,7 +78,7 @@ export function merchantCheckoutSettings(config) {
 }
 
 /** Transport composition only: all amount/window/session matching stays in Payments. */
-export async function createMerchantRuntime({ config, apiKey, store, provider, accountStatus, webhookSecret, retrieveEvent }) {
+export async function createMerchantRuntime({ config, apiKey, store, provider, accountStatus, webhookSecret, retrieveEvent, shipGrant = () => null }) {
   validateConfig(config, apiKey);
   const privateKey = await importPKCS8(config.privateKey, 'ES256');
   const publicKey = await importSPKI(config.publicKey, 'ES256');
@@ -156,12 +157,22 @@ export async function createMerchantRuntime({ config, apiKey, store, provider, a
       if (url.pathname === '/api/store-passes') {
         if (request.method !== 'POST' || url.search) return json({ error: 'method_not_allowed' }, 405);
         const bearer = request.headers.get('authorization')?.match(/^Bearer ([^\s]+)$/i)?.[1] ?? '';
-        if (!equal(bearer, config.storeKey)) return json({ error: 'unauthorized' }, 401);
+        // Distinct plugin keys have disjoint grants. A broken Ship grant cannot stop Payments.
+        const commerce = equal(bearer, config.storeKey);
+        let ship = false;
+        if (!commerce) {
+          try {
+            const grant = validateShipGrant(await shipGrant(), config);
+            ship = grant.enabled && equal(bearer, grant.storeKey);
+          } catch { /* no Ship grant */ }
+        }
+        if (!commerce && !ship) return json({ error: 'unauthorized' }, 401);
         try {
           const body = await request.json();
-          if (Object.keys(body).sort().join() !== 'audience,scope,site_id' || body.site_id !== config.siteId ||
-              !(body.audience === config.audience && ['payments:checkout', 'payments:admin'].includes(body.scope) ||
-                body.audience === settingsAudience && body.scope === 'commerce:settings')) return json({ error: 'invalid_pass_request' }, 400);
+          if (!body || Object.keys(body).sort().join() !== 'audience,scope,site_id' || body.site_id !== config.siteId ||
+              !(commerce && (body.audience === config.audience && ['payments:checkout', 'payments:admin'].includes(body.scope) ||
+                body.audience === settingsAudience && body.scope === 'commerce:settings') ||
+                ship && body.audience === SHIP_AUDIENCE && body.scope === SHIP_SCOPE)) return json({ error: 'invalid_pass_request' }, 400);
           const token = await new SignJWT({ site_id: config.siteId, site_origin: config.origin, scope: body.scope })
             .setProtectedHeader({ alg: 'ES256', kid: 'brb-owner-v1' }).setIssuer(config.issuer).setAudience(body.audience)
             .setSubject(config.subject).setIssuedAt().setExpirationTime('5m').sign(privateKey);
@@ -219,7 +230,8 @@ async function main() {
   const store = openAttemptStore('/var/lib/backroadbum/payments/attempts.db', config);
   const provider = createStripeCheckout({ apiKey: process.env.STRIPE_API_KEY, mode: 'test', ownAccountId: config.stripeAccountId });
   const runtime = await createMerchantRuntime({ config, apiKey: process.env.STRIPE_API_KEY, store, provider, accountStatus,
-    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET, retrieveEvent: id => stripe.events.retrieve(id) });
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET, retrieveEvent: id => stripe.events.retrieve(id),
+    shipGrant: () => readShipGrant(config) });
   const server = createLoopbackServer(runtime, config.origin);
   server.listen(8787, '127.0.0.1', () => console.log('Merchant Payments listening on loopback; test mode only.'));
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => server.close(() => { store.close(); process.exit(0); }));
